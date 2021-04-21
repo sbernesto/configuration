@@ -1,14 +1,16 @@
 ---
 dependencies:
   - common
-  - supervisor
+  - role: supervisor
+    supervisor_spec:
+      - service: edxapp
+        migration_check_services: "lms,cms,workers"
+        python: "{{ edxapp_venv_bin }}/python"
+        code: "{{ edxapp_code_dir | default(None) }}"
+        env: "{{ edxapp_app_dir | default(None) }}/edxapp_env"
   - edxapp_common
-  - devpi
   - nltk
-  - role: user
-    user_info:
-      - name: "{{ EDXAPP_AUTOMATOR_NAME }}"
-        sudo_cmds: "{{ EDXAPP_AUTOMATOR_SUDO_CMDS }}"
-        type: restricted
-        authorized_keys: "{{ EDXAPP_AUTOMATOR_AUTHORIZED_KEYS }}"
-    when: EDXAPP_AUTOMATOR_AUTHORIZED_KEYS|length != 0
+  - role: edx_themes
+    theme_users:
+      - "{{ edxapp_user }}"
+    when: EDXAPP_ENABLE_COMPREHENSIVE_THEMING

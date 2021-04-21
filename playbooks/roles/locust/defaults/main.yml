@@ -3,8 +3,8 @@
 # edX Configuration
 #
 # github:     https://github.com/edx/configuration
-# wiki:       https://github.com/edx/configuration/wiki
-# code style: https://github.com/edx/configuration/wiki/Ansible-Coding-Conventions
+# wiki:       https://openedx.atlassian.net/wiki/display/OpenOPS
+# code style: https://openedx.atlassian.net/wiki/display/OpenOPS/Ansible+Code+Conventions
 # license:    https://github.com/edx/configuration/blob/master/LICENSE.TXT
 #
 ##
@@ -17,21 +17,13 @@
 locust_service_name: "locust"
 locust_home: "{{ COMMON_APP_DIR }}/{{ locust_service_name }}"
 locust_user: "locust"
-locust_code_dir: "{{ locust_home }}/load-tests"
-locust_requirements_base: "{{ locust_code_dir }}"
-locust_requirements:
-  - "requirements.txt"
-locust_run_dir: "{{ locust_code_dir }}/{{ LOCUST_LOADTEST_DIR }}"
+locust_code_dir: "{{ locust_home }}/edx-load-tests"
+locust_requirements_base: "{{ locust_code_dir }}/requirements"
 
 LOCUST_GIT_IDENTITY: !!null
 
-LOCUST_LOADTEST_REPO: 'load-tests'
+LOCUST_LOADTEST_REPO: 'edx-load-tests'
 LOCUST_LOADTEST_REPO_VERSION: 'master'
-LOCUST_LOADTEST_DIR: 'locust/lms'
-
-LOCUST_MASTER: !!null
-
-LOCUST_TARGET_HOST: 'http://localhost/'
 
 LOCUST_SERVICE_CONFIG: ''
 
@@ -56,3 +48,16 @@ locust_debian_pkgs:
   - gfortran
 
 locust_redhat_pkgs: []
+
+# ulimit variables
+ulimit_config:
+  - domain: '*'
+    type: soft
+    item: nofile
+    value: 4096
+  - domain: '*'
+    type: hard
+    item: nofile
+    value: 4096
+
+ulimit_conf_file: "/etc/security/limits.conf"

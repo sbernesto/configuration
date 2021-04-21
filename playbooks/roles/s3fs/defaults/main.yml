@@ -3,17 +3,17 @@
 # edX Configuration
 #
 # github:     https://github.com/edx/configuration
-# wiki:       https://github.com/edx/configuration/wiki
-# code style: https://github.com/edx/configuration/wiki/Ansible-Coding-Conventions
+# wiki:       https://openedx.atlassian.net/wiki/display/OpenOPS
+# code style: https://openedx.atlassian.net/wiki/display/OpenOPS/Ansible+Code+Conventions
 # license:    https://github.com/edx/configuration/blob/master/LICENSE.TXT
 #
 ##
 # Vars for role s3fs
 #
 
-s3fs_version: 's3fs-1.73'
+S3FS_VERSION: 's3fs-1.73'
 s3fs_download_src: 'http://s3fs.googlecode.com/files/'
-s3fs_archive: '{{ s3fs_version }}.tar.gz'
+s3fs_archive: '{{ S3FS_VERSION }}.tar.gz'
 s3fs_download_url: '{{ s3fs_download_src }}/{{ s3fs_archive }}'
 s3fs_temp_dir: '/var/tmp'
 

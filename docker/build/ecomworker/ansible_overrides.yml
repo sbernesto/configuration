@@ -1,0 +1,4 @@
+---
+
+DOCKER_TLD: "edx"
+devstack: true

@@ -15,6 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+# From https://github.com/ansible/ansible/issues/31527#issuecomment-335495855
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
+
 
 import os
 import sys
@@ -28,9 +32,10 @@ except ImportError:
 else:
     import boto.sqs
     from boto.exception import NoAuthHandlerFound
+from ansible.plugins.callback import CallbackBase
 
 
-class CallbackModule(object):
+class CallbackModule(CallbackBase):
     """
     This Ansible callback plugin sends task events
     to SQS.
@@ -62,19 +67,19 @@ class CallbackModule(object):
         self.start_time = time.time()
 
         if not 'SQS_REGION' in os.environ:
-            print 'ANSIBLE_ENABLE_SQS enabled but SQS_REGION ' \
-                  'not defined in environment'
+            print('ANSIBLE_ENABLE_SQS enabled but SQS_REGION ' \
+                  'not defined in environment')
             sys.exit(1)
         self.region = os.environ['SQS_REGION']
         try:
             self.sqs = boto.sqs.connect_to_region(self.region)
         except NoAuthHandlerFound:
-            print 'ANSIBLE_ENABLE_SQS enabled but cannot connect ' \
-                  'to AWS due invalid credentials'
+            print('ANSIBLE_ENABLE_SQS enabled but cannot connect ' \
+                  'to AWS due invalid credentials')
             sys.exit(1)
         if not 'SQS_NAME' in os.environ:
-            print 'ANSIBLE_ENABLE_SQS enabled but SQS_NAME not ' \
-                  'defined in environment'
+            print('ANSIBLE_ENABLE_SQS enabled but SQS_NAME not ' \
+                  'defined in environment')
             sys.exit(1)
         self.name = os.environ['SQS_NAME']
         self.queue = self.sqs.create_queue(self.name)
@@ -93,7 +98,7 @@ class CallbackModule(object):
     def runner_on_ok(self, host, res):
         if self.enable_sqs:
             # don't send the setup results
-            if res['invocation']['module_name'] != "setup":
+            if 'invocation' in res and 'module_name' in res['invocation'] and res['invocation']['module_name'] != "setup":
                 self._send_queue_message(res, 'OK')
 
     def playbook_on_task_start(self, name, is_conditional):
@@ -148,7 +153,7 @@ class CallbackModule(object):
                     self.sqs.send_message(self.queue, json.dumps(payload))
                     break
                 except socket.gaierror as e:
-                    print 'socket.gaierror will retry: ' + e
+                    print('socket.gaierror will retry: ' + e)
                     time.sleep(1)
                 except Exception as e:
                     raise e

@@ -1,5 +1,10 @@
 #!/usr/bin/env python
 
+from __future__ import absolute_import
+from six.moves import filter
+from six.moves import map
+from six.moves import range
+from six.moves import zip
 DOCUMENTATION = """
 ---
 module: mongodb_replica_set
@@ -92,7 +97,8 @@ else:
     pymongo_found = True
 
 import json, copy
-from urllib import quote_plus
+from six.moves.urllib.parse import quote_plus
+from operator import itemgetter
 
 ########### Mongo API calls ###########
 def get_replset():
@@ -203,9 +209,15 @@ def is_member_subset(old_members,new_members):
     extra information that is not reflected in old_members because we do not necesarily
     track all of mongo's internal data in the config.
     '''
-    for member in old_members:
-        for k in member:
-            if member[k] != new_members[member['_id']][k]: return False
+
+    # Mongo returns the member set in no particular order, and we were
+    # indexing into the list using _id before without sorting which led to failure.
+    old_members, new_members = [sorted(k, key=itemgetter('_id'))
+        for k in (old_members, new_members)]
+
+    for k1, k2 in zip(old_members, new_members):
+        for key, value in k1.items():
+            if value != k2[key]: return False
 
     return True
 
@@ -262,6 +274,12 @@ def update_replset(rs_config):
         if not check_config_subset(rs_config, changed_rs_config):
             module.fail_json(msg="Failed to validate that the replica set was changed", new_config=changed_rs_config, config=rs_config)
 
+    # Remove settings from changed_rs_config before exit to avoid
+    # problem with exit_json() and unserializable ObjectId
+    # because MongoDB returns JSON which is not serializable
+    if changed_rs_config.get('settings') is not None:
+        changed_rs_config['settings'] = None
+    
     module.exit_json(changed=changed, config=rs_config, new_config=changed_rs_config)
 
 
@@ -269,7 +287,7 @@ def update_replset(rs_config):
 def get_mongo_uri(host, port, username, password, auth_database):
     mongo_uri = 'mongodb://'
     if username and password:
-        mongo_uri += "{}:{}@".format(*map(quote_plus, [username,password]))
+        mongo_uri += "{}:{}@".format(*list(map(quote_plus, [username,password])))
 
     mongo_uri += "{}:{}".format(quote_plus(host), port)
 
@@ -295,7 +313,7 @@ def primary_client(some_host, some_port, username, password, auth_database):
     status = client.admin.command("replSetGetStatus")
 
     # Find out who the primary is.
-    rs_primary = filter(lambda member: member['stateStr']=='PRIMARY', status['members'])[0]
+    rs_primary = [member for member in status['members'] if member['stateStr']=='PRIMARY'][0]
     primary_host, primary_port = rs_primary['name'].split(':')
 
     # Connect to the primary if this is not the primary.
@@ -337,6 +355,12 @@ def validate_args():
     password = module.params.get('password')
     if (username and not password) or (password and not username):
         module.fail_json(msg="Must provide both username and password or neither.")
+
+    # Check that if votes is 0 priority is also 0
+    for member in module.params.get('rs_config').get('members'):
+        if member.get('votes') == 0 and member.get('priority') != 0:
+            module.fail_json(msg="Non-voting member {} must have priority 0".
+                             format(member['host']))
 
     return module
 

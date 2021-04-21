@@ -28,8 +28,13 @@ else
     export DISPLAY="{{ localdev_xvfb_display }}"
 fi
 
+# Import ~/.bashrc.d modules
+if [ -d {{ item.home }}/.bashrc.d ]; then
+   for BASHMODULE in {{ item.home }}/.bashrc.d/*; do
+      source $BASHMODULE
+   done
+fi
+
 cd "{{ item.home }}/{{ item.repo }}"
 
-source "{{ item.home }}/.paver_autocomplete"
-
-export JSCOVER_JAR="/usr/local/bin/JSCover-all-{{ localdev_jscover_version }}.jar"
+export JSCOVER_JAR="/usr/local/bin/JSCover-all-{{ LOCALDEV_JSCOVER_VERSION }}.jar"

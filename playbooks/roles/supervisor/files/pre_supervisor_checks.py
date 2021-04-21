@@ -1,8 +1,10 @@
+from __future__ import absolute_import
+from __future__ import print_function
 import argparse
-import boto
-from boto.utils import get_instance_metadata
+import backoff
+import boto.ec2
+from boto.utils import get_instance_metadata, get_instance_identity
 from boto.exception import AWSConnectionError
-import hipchat
 import os
 import subprocess
 import traceback
@@ -10,27 +12,31 @@ import socket
 import time
 
 # Services that should be checked for migrations.
-MIGRATION_COMMANDS = {
-        'lms':     ". {env_file}; {python} {code_dir}/manage.py lms migrate --noinput --list --settings=aws",
-        'cms':     ". {env_file}; {python} {code_dir}/manage.py cms migrate --noinput --list --settings=aws",
-        'xqueue': "{python} {code_dir}/manage.py xqueue migrate --noinput --settings=aws --db-dry-run --merge",
-        'ecommerce':     ". {env_file}; {python} {code_dir}/manage.py migrate --noinput --list",
-        'programs':     ". {env_file}; {python} {code_dir}/manage.py migrate --noinput --list",
-        'insights':      ". {env_file}; {python} {code_dir}/manage.py migrate --noinput --list",
-        'analytics_api': ". {env_file}; {python} {code_dir}/manage.py migrate --noinput --list"
+GENERIC_MIGRATION_COMMAND = ". {env_file}; sudo -E -u {user} {python} {code_dir}/manage.py showmigrations"
+EDXAPP_MIGRATION_COMMANDS = {
+        'lms':        "/edx/bin/edxapp-migrate-lms --noinput --list",
+        'cms':        "/edx/bin/edxapp-migrate-cms --noinput --list",
+        'workers':    "/edx/bin/edxapp-migrate-cms --noinput --list; /edx/bin/edxapp-migrate-lms --noinput --list",
     }
-HIPCHAT_USER = "PreSupervisor"
+NGINX_ENABLE = {
+        'lms': "sudo ln -sf /edx/app/nginx/sites-available/lms /etc/nginx/sites-enabled/lms",
+        'cms': "sudo ln -sf /edx/app/nginx/sites-available/cms /etc/nginx/sites-enabled/cms",
+    }
 
 # Max amount of time to wait for tags to be applied.
 MAX_BACKOFF = 120
 INITIAL_BACKOFF = 1
+
+MAX_ATTEMPTS = int(os.environ.get('RETRY_MAX_ATTEMPTS', 5))
+
+REGION = get_instance_identity()['document']['region']
 
 def services_for_instance(instance_id):
     """
     Get the list of all services named by the services tag in this
     instance's tags.
     """
-    ec2 = boto.connect_ec2()
+    ec2 = boto.ec2.connect_to_region(REGION)
     reservations = ec2.get_all_instances(instance_ids=[instance_id])
     for reservation in reservations:
         for instance in reservation.instances:
@@ -45,7 +51,7 @@ def services_for_instance(instance_id):
                     yield service
 
 def edp_for_instance(instance_id):
-    ec2 = boto.connect_ec2()
+    ec2 = boto.ec2.connect_to_region(REGION)
     reservations = ec2.get_all_instances(instance_ids=[instance_id])
     for reservation in reservations:
         for instance in reservation.instances:
@@ -59,6 +65,21 @@ def edp_for_instance(instance_id):
                     raise Exception(msg)
                 return (environment, deployment, play)
 
+@backoff.on_exception(backoff.expo,
+                      Exception,
+                      max_tries=MAX_ATTEMPTS)
+def check_command_output_with_backoff(cmd):
+    """
+    Run command using subprocess. Retry if a non-zero error code is returned
+
+    Arguments:
+      cmd: string - command to be run via subprocess
+
+    Returns a (byte) string
+    """
+    return subprocess.check_output(cmd, shell=True, )
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="Enable all services that are in the services tag of this ec2 instance.")
@@ -67,85 +88,28 @@ if __name__ == '__main__':
     parser.add_argument("-e","--enabled",
         help="The location of the enabled services.")
 
-    migration_args = parser.add_argument_group("edxapp_migrations",
-            "Args for running edxapp migration checks.")
-    migration_args.add_argument("--edxapp-code-dir",
-            help="Location of the edx-platform code.")
-    migration_args.add_argument("--edxapp-python",
-            help="Path to python to use for executing migration check.")
-    migration_args.add_argument("--edxapp-env",
-            help="Location of the ecommerce environment file.")
-
-    xq_migration_args = parser.add_argument_group("xqueue_migrations",
-            "Args for running xqueue migration checks.")
-    xq_migration_args.add_argument("--xqueue-code-dir",
-            help="Location of the xqueue code.")
-    xq_migration_args.add_argument("--xqueue-python",
-            help="Path to python to use for executing migration check.")
-
-    ecom_migration_args = parser.add_argument_group("ecommerce_migrations",
-            "Args for running ecommerce migration checks.")
-    ecom_migration_args.add_argument("--ecommerce-python",
+    app_migration_args = parser.add_argument_group("app_migrations",
+            "Args for running app migration checks.")
+    app_migration_args.add_argument("--check-migrations", action='store_true',
+        help="Enable checking migrations.")
+    app_migration_args.add_argument("--check-migrations-service-names",
+        help="Comma seperated list of service names that should be checked for migrations")
+    app_migration_args.add_argument("--app-python",
         help="Path to python to use for executing migration check.")
-    ecom_migration_args.add_argument("--ecommerce-env",
-        help="Location of the ecommerce environment file.")
-    ecom_migration_args.add_argument("--ecommerce-code-dir",
-        help="Location to of the ecommerce code.")
-
-    programs_migration_args = parser.add_argument_group("programs_migrations",
-            "Args for running programs migration checks.")
-    programs_migration_args.add_argument("--programs-python",
-        help="Path to python to use for executing migration check.")
-    programs_migration_args.add_argument("--programs-env",
-        help="Location of the programs environment file.")
-    programs_migration_args.add_argument("--programs-code-dir",
-        help="Location to of the programs code.")
-
-    insights_migration_args = parser.add_argument_group("insights_migrations",
-            "Args for running insights migration checks.")
-    insights_migration_args.add_argument("--insights-python",
-        help="Path to python to use for executing migration check.")
-    insights_migration_args.add_argument("--insights-env",
-        help="Location of the insights environment file.")
-    insights_migration_args.add_argument("--insights-code-dir",
-        help="Location to of the insights code.")
-
-    analyticsapi_migration_args = parser.add_argument_group("analytics_api_migrations",
-            "Args for running analytics_api migration checks.")
-    analyticsapi_migration_args.add_argument("--analytics-api-python",
-        help="Path to python to use for executing migration check.")
-    analyticsapi_migration_args.add_argument("--analytics-api-env",
-        help="Location of the analytics_api environment file.")
-    analyticsapi_migration_args.add_argument("--analytics-api-code-dir",
-        help="Location to of the analytics_api code.")
-
-    hipchat_args = parser.add_argument_group("hipchat",
-            "Args for hipchat notification.")
-    hipchat_args.add_argument("-c","--hipchat-api-key",
-        help="Hipchat token if you want to receive notifications via hipchat.")
-    hipchat_args.add_argument("-r","--hipchat-room",
-        help="Room to send messages to.")
+    app_migration_args.add_argument("--app-env",
+        help="Location of the app environment file.")
+    app_migration_args.add_argument("--app-code-dir",
+        help="Location of the app code.")
 
     args = parser.parse_args()
 
     report = []
     prefix = None
-    notify = None
-
-    try:
-        if args.hipchat_api_key:
-            hc = hipchat.HipChat(token=args.hipchat_api_key)
-            notify = lambda message: hc.message_room(room_id=args.hipchat_room,
-                message_from=HIPCHAT_USER, message=message)
-    except Exception as e:
-        print("Failed to initialize hipchat, {}".format(e))
-        traceback.print_exc()
 
     instance_id = get_instance_metadata()['instance-id']
     prefix = instance_id
 
-
-    ec2 = boto.connect_ec2()
+    ec2 = boto.ec2.connect_to_region(REGION)
     reservations = ec2.get_all_instances(instance_ids=[instance_id])
     instance = reservations[0].instances[0]
     if instance.instance_profile['arn'].endswith('/abbey'):
@@ -169,7 +133,7 @@ if __name__ == '__main__':
                 instance_id=instance_id)
             break
         except Exception as e:
-            print("Failed to get EDP for {}: {}".format(instance_id, str(e)))
+            print(("Failed to get EDP for {}: {}".format(instance_id, str(e))))
             # With the time limit being 2 minutes we will
             # try 5 times before giving up.
             time.sleep(backoff)
@@ -179,88 +143,87 @@ if __name__ == '__main__':
     if environment is None or deployment is None or play is None:
         msg = "Unable to retrieve environment, deployment, or play tag."
         print(msg)
-        if notify:
-            notify("{} : {}".format(prefix, msg))
-        exit(0)
+        exit(1)
 
     #get the hostname of the sandbox
     hostname = socket.gethostname()
 
+    ami_id = get_instance_metadata()['ami-id']
+
     try:
         #get the list of the volumes, that are attached to the instance
         volumes = ec2.get_all_volumes(filters={'attachment.instance-id': instance_id})
-    
+
         for volume in volumes:
             volume.add_tags({"hostname": hostname,
                              "environment": environment,
                              "deployment": deployment,
                              "cluster": play,
                              "instance-id": instance_id,
+                             "ami-id": ami_id,
                              "created": volume.create_time })
     except Exception as e:
         msg = "Failed to tag volumes associated with {}: {}".format(instance_id, str(e))
         print(msg)
-        if notify:
-            notify(msg)
 
     try:
         for service in services_for_instance(instance_id):
-            if service in MIGRATION_COMMANDS:
-                # Do extra migration related stuff.
-                if service == 'xqueue' and args.xqueue_code_dir:
-                    cmd = MIGRATION_COMMANDS[service].format(python=args.xqueue_python,
-                        code_dir=xqueue_code_dir)
-                    if os.path.exists(args.xqueue_code_dir):
-                        os.chdir(args.xqueue_code_dir)
-                        # Run migration check command.
-                        output = subprocess.check_output(cmd, shell=True)
-                        if 'Migrating' in output:
-                            raise Exception("Migrations have not been run for {}".format(service))
-                else:
-                    new_services = {
-                        "lms": {'python': args.edxapp_python, 'env_file': args.edxapp_env, 'code_dir': args.edxapp_code_dir},
-                        "cms": {'python': args.edxapp_python, 'env_file': args.edxapp_env, 'code_dir': args.edxapp_code_dir},
-                        "ecommerce": {'python': args.ecommerce_python, 'env_file': args.ecommerce_env, 'code_dir': args.ecommerce_code_dir},
-                        "programs": {'python': args.programs_python, 'env_file': args.programs_env, 'code_dir': args.programs_code_dir},
-                        "insights": {'python': args.insights_python, 'env_file': args.insights_env, 'code_dir': args.insights_code_dir},
-                        "analytics_api": {'python': args.analytics_api_python, 'env_file': args.analytics_api_env, 'code_dir': args.analytics_api_code_dir}
+            if service in NGINX_ENABLE:
+                subprocess.call(NGINX_ENABLE[service], shell=True)
+                report.append("Enabling nginx: {}".format(service))
+            # We have to reload the new config files
+            subprocess.call("/bin/systemctl reload nginx", shell=True)
+
+            if (args.check_migrations and
+                args.app_python != None and
+                args.app_env != None and
+                args.app_code_dir != None and
+                args.check_migrations_service_names != None and
+                service in args.check_migrations_service_names.split(',')):
+
+                user = play
+                # Legacy naming workaround
+                # Using the play works everywhere but here.
+                if user == "analyticsapi":
+                    user="analytics_api"
+
+                cmd_vars = {
+                    'python': args.app_python,
+                    'env_file': args.app_env,
+                    'code_dir': args.app_code_dir,
+                    'service': service,
+                    'user': user,
                     }
+                cmd = GENERIC_MIGRATION_COMMAND.format(**cmd_vars)
+                if service in EDXAPP_MIGRATION_COMMANDS:
+                    cmd = EDXAPP_MIGRATION_COMMANDS[service]
 
-                    if service in new_services and all(arg!=None for arg in new_services[service].values()) and service in MIGRATION_COMMANDS:
-                        serv_vars = new_services[service]
-
-                        cmd = MIGRATION_COMMANDS[service].format(**serv_vars)
-                        if os.path.exists(serv_vars['code_dir']):
-                            os.chdir(serv_vars['code_dir'])
-                            # Run migration check command.
-                            output = subprocess.check_output(cmd, shell=True, )
-                            if '[ ]' in output:
-                                raise Exception("Migrations have not been run for {}".format(service))
-
+                if os.path.exists(cmd_vars['code_dir']):
+                    os.chdir(cmd_vars['code_dir'])
+                    # Run migration check command.
+                    output = check_command_output_with_backoff(cmd)
+                    if b'[ ]' in output:
+                        raise Exception("Migrations have not been run for {}".format(service))
+                    else:
+                        report.append("Checked migrations: {}".format(service))
 
             # Link to available service.
             available_file = os.path.join(args.available, "{}.conf".format(service))
             link_location = os.path.join(args.enabled, "{}.conf".format(service))
             if os.path.exists(available_file):
-                subprocess.call("ln -sf {} {}".format(available_file, link_location), shell=True)
+                subprocess.call("sudo -u supervisor ln -sf {} {}".format(available_file, link_location), shell=True)
                 report.append("Enabling service: {}".format(service))
             else:
                 raise Exception("No conf available for service: {}".format(link_location))
+
     except AWSConnectionError as ae:
         msg = "{}: ERROR : {}".format(prefix, ae)
-        if notify:
-            notify(msg)
-            notify(traceback.format_exc())
         raise ae
     except Exception as e:
         msg = "{}: ERROR : {}".format(prefix, e)
         print(msg)
-        if notify:
-            notify(msg)
         traceback.print_exc()
         raise e
     else:
         msg = "{}: {}".format(prefix, " | ".join(report))
         print(msg)
-        if notify:
-            notify(msg)

@@ -1,28 +1,25 @@
 ---
-- name: Get the list of hpi files
-  shell: "ls {{ jenkins_home }}/plugins/*.hpi"
-  register: hpi_files
+# The deadsnakes PPA is required to install python3.5 on Trusty.
+# Xenial comes with python3.5 installed.
+- name: add deadsnakes repository
+  apt_repository:
+    repo: "ppa:deadsnakes/ppa"
+  when: ansible_distribution_release == 'bionic'
+  tags:
+    - install
+    - install:system-requirements
 
-- name: Set the permission on hpi files
-  file: 
-    path: "{{ item }}"
-    owner: "{{ jenkins_user }}"
-    group: "{{ jenkins_group }}"
-    mode: 0644
-  with_items: hpi_files.stdout_lines
-  notify:
-    - restart Jenkins
-
-- name: Get the list of jpi files
-  shell: "ls {{ jenkins_home }}/plugins/*.jpi"
-  register: jpi_files
-
-- name: Set the permission on jpi files
-  file: 
-    path: "{{ item }}"
-    owner: "{{ jenkins_user }}"
-    group: "{{ jenkins_group }}"
-    mode: 0644
-  with_items: jpi_files.stdout_lines
-  notify:
-    - restart Jenkins
+- name: install python3.5, 3.6 and 3.8
+  apt:
+    name: "{{ item }}"
+  with_items:
+    - python3.5
+    - python3.5-dev
+    - python3.6
+    - python3.6-dev
+    - python3.8
+    - python3.8-dev
+  when: ansible_distribution_release == 'bionic'
+  tags:
+    - install
+    - install:system-requirements

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # This file is part of Ansible
 #
 # Ansible is free software: you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 # https://github.com/ansible/ansible-modules-core/pull/1323
 
 
+from __future__ import absolute_import
 DOCUMENTATION = '''
 ---
 module: ec2_vpc
@@ -73,6 +74,12 @@ options:
     required: false
     default: "no"
     choices: [ "yes", "no" ]
+    aliases: []
+  internet_gateway_tags:
+    description:
+      - 'A dictionary array of resource tags of the form: { tag1: value1, tag2: value2 }.'
+    required: false
+    default: null
     aliases: []
   route_tables:
     description:
@@ -135,6 +142,8 @@ EXAMPLES = '''
             az: us-west-2a
             resource_tags: { "Environment":"Dev", "Tier" : "DB" }
         internet_gateway: True
+        internet_gateway_tags:
+            Environment: Dev
         route_tables:
           - subnets:
               - 172.22.2.0/24
@@ -355,6 +364,7 @@ def create_vpc(module, vpc_conn):
     dns_hostnames = module.params.get('dns_hostnames')
     subnets = module.params.get('subnets')
     internet_gateway = module.params.get('internet_gateway')
+    internet_gateway_tags = module.params.get('internet_gateway_tags')
     route_tables = module.params.get('route_tables')
     vpc_spec_tags = module.params.get('resource_tags')
     wait = module.params.get('wait')
@@ -385,7 +395,7 @@ def create_vpc(module, vpc_conn):
                             pending = False
                 # sometimes vpc_conn.create_vpc() will return a vpc that can't be found yet by vpc_conn.get_all_vpcs()
                 # when that happens, just wait a bit longer and try again
-                except boto.exception.BotoServerError, e:
+                except boto.exception.BotoServerError as e:
                     if e.error_code != 'InvalidVpcID.NotFound':
                         raise
                 if pending:
@@ -394,7 +404,7 @@ def create_vpc(module, vpc_conn):
                 # waiting took too long
                 module.fail_json(msg = "wait for vpc availability timeout on %s" % time.asctime())
 
-        except boto.exception.BotoServerError, e:
+        except boto.exception.BotoServerError as e:
             module.fail_json(msg = "%s: %s" % (e.error_code, e.error_message))
 
     # Done with base VPC, now change to attributes and features.
@@ -448,7 +458,7 @@ def create_vpc(module, vpc_conn):
                         vpc_conn.create_tags(new_subnet.id, new_subnet_tags)
 
                     changed = True
-                except EC2ResponseError, e:
+                except EC2ResponseError as e:
                     module.fail_json(msg='Unable to create subnet {0}, error: {1}'.format(subnet['cidr'], e))
 
         # Now delete all absent subnets
@@ -461,7 +471,7 @@ def create_vpc(module, vpc_conn):
                 try:
                     vpc_conn.delete_subnet(csubnet.id)
                     changed = True
-                except EC2ResponseError, e:
+                except EC2ResponseError as e:
                     module.fail_json(msg='Unable to delete subnet {0}, error: {1}'.format(csubnet.cidr_block, e))
 
     # Handle Internet gateway (create/delete igw)
@@ -473,9 +483,11 @@ def create_vpc(module, vpc_conn):
         if len(igws) != 1:
             try:
                 igw = vpc_conn.create_internet_gateway()
+                if internet_gateway_tags:
+                    vpc_conn.create_tags(igw.id, internet_gateway_tags)
                 vpc_conn.attach_internet_gateway(igw.id, vpc.id)
                 changed = True
-            except EC2ResponseError, e:
+            except EC2ResponseError as e:
                 module.fail_json(msg='Unable to create Internet Gateway, error: {0}'.format(e))
         else:
             # Set igw variable to the current igw instance for use in route tables.
@@ -486,7 +498,7 @@ def create_vpc(module, vpc_conn):
                 vpc_conn.detach_internet_gateway(igws[0].id, vpc.id)
                 vpc_conn.delete_internet_gateway(igws[0].id)
                 changed = True
-            except EC2ResponseError, e:
+            except EC2ResponseError as e:
                 module.fail_json(msg='Unable to delete Internet Gateway, error: {0}'.format(e))
 
     # Handle route tables - this may be worth splitting into a
@@ -552,7 +564,7 @@ def create_vpc(module, vpc_conn):
 
                 all_route_tables.append(new_rt)
                 changed = True
-            except EC2ResponseError, e:
+            except EC2ResponseError as e:
                 module.fail_json(
                     msg='Unable to create and associate route table {0}, error: ' \
                     '{1}'.format(rt, e)
@@ -581,7 +593,7 @@ def create_vpc(module, vpc_conn):
                     if not is_main:
                         vpc_conn.delete_route_table(rt.id)
                         changed = True
-                except EC2ResponseError, e:
+                except EC2ResponseError as e:
                     module.fail_json(msg='Unable to delete old route table {0}, error: {1}'.format(rt.id, e))
 
     vpc_dict = get_vpc_info(vpc)
@@ -659,7 +671,7 @@ def terminate_vpc(module, vpc_conn, vpc_id=None, cidr=None):
                         vpc_conn.delete_route_table(rt.id)
 
                 vpc_conn.delete_vpc(vpc.id)
-            except EC2ResponseError, e:
+            except EC2ResponseError as e:
                 module.fail_json(
                     msg='Unable to delete VPC {0}, error: {1}'.format(vpc.id, e)
                 )
@@ -680,6 +692,7 @@ def main():
             subnets = dict(type='list'),
             vpc_id = dict(),
             internet_gateway = dict(type='bool', default=False),
+            internet_gateway_tags = dict(type='dict'),
             resource_tags = dict(type='dict', required=True),
             route_tables = dict(type='list'),
             state = dict(choices=['present', 'absent'], default='present'),
@@ -704,7 +717,7 @@ def main():
                 region,
                 **aws_connect_kwargs
             )
-        except boto.exception.NoAuthHandlerFound, e:
+        except boto.exception.NoAuthHandlerFound as e:
             module.fail_json(msg = str(e))
     else:
         module.fail_json(msg="region must be specified")
